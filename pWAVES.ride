@@ -3,7 +3,7 @@
 {-# SCRIPT_TYPE ACCOUNT #-}
 
 let CONTRACT_TYPE = "pWAVES"
-let VERSION = "pWAVES-1.0.0"
+let VERSION = "pWAVES-1.0.1"
 
 let Scale8 = 100000000
 let Scale6 = 1000000
@@ -35,7 +35,7 @@ func getNodesSetup() = {
   let nodesSetup = getStringValue("setup_nodes").split(";") # "address,share;address,share"
   func f(accum: (List[String], List[Int]), next: String) = {
     let node = next.split(",")
-    (accum._1 ++ [node[0]], accum._2 ++ [node[1]])
+    (accum._1 ++ [node[0]], accum._2 ++ [node[1].parseInt()])
   }
 
   FOLD<10>(nodesSetup, ([], []), f)
@@ -93,7 +93,7 @@ func leaseToDefault(amount: Int) = {
 @Callable(i)
 func rebalanceLeases() = {
   let lastRebalance = getIntegerValue("stats_lastRebalance")
-  if (lastRebalance - 100 <= height) then {throw("can't rebalance yet")}
+  if (height - 100 <= lastRebalance) then {throw("can't rebalance yet")}
   else {
     let balance = wavesBalance(this).regular
     let (nodesLi, sharesLi) = getNodesSetup()
