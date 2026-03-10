@@ -1,0 +1,221 @@
+{-# STDLIB_VERSION 6 #-}
+{-# CONTENT_TYPE DAPP #-}
+{-# SCRIPT_TYPE ACCOUNT #-}
+
+let CONTRACT_TYPE = "pWAVES"
+let VERSION = "pWAVES-1.0.0"
+
+let Scale8 = 100000000
+let Scale6 = 1000000
+
+let aggregatorAddress = getString("setup_aggregator").valueOrElse("").addressFromString().valueOrElse(Address(base58'3PGFHzVGT4NTigwCKP1NcwoXkodVZwvBuuU'))
+let maxSwapAmount = getInteger("setup_maxSwapAmount").valueOrElse(10000000)
+let maxLPCap = getInteger("setup_maxLPCap").valueOrElse(10000000 * Scale8)
+
+func getAssetString(assetId: ByteVector|Unit) = {
+  match assetId {
+    case b:ByteVector => b.toBase58String()
+    case _ => "WAVES"
+  }
+}
+
+func getAssetBytes(assetIdStr: String) = {
+  if (assetIdStr == "WAVES") then {unit} else {assetIdStr.fromBase58String()}
+}
+
+func getBalance(assetIdStr: String) = {
+  if (assetIdStr == "WAVES") then {wavesBalance(this).available} else {assetBalance(this, assetIdStr.fromBase58String())}
+}
+
+func getTotalBalance(assetIdStr: String) = {
+  if (assetIdStr == "WAVES") then {wavesBalance(this).regular} else {assetBalance(this, assetIdStr.fromBase58String())}
+}
+
+func getNodesSetup() = {
+  let nodesSetup = getStringValue("setup_nodes").split(";") # "address,share;address,share"
+  func f(accum: (List[String], List[Int]), next: String) = {
+    let node = next.split(",")
+    (accum._1 ++ [node[0]], accum._2 ++ [node[1]])
+  }
+
+  FOLD<10>(nodesSetup, ([], []), f)
+}
+
+func getDefaultNode() = {
+  getString("setup_defaultNode").value()
+}
+
+func getLPQuantity() = {
+  assetInfo(getStringValue("setup_lpId").fromBase58String()).value().quantity
+}
+
+func getLPContractPrice(changedAmount: Int) = {
+  let treasury = getTotalBalance("WAVES") + changedAmount
+  let quant = getLPQuantity()
+  if (quant == 0) then Scale8 else fraction(treasury, Scale8, quant)
+}
+
+func getStatsEntry () = {
+  StringEntry("stats_" + toString(height), toString(getLPQuantity()) + "__" + toString(getTotalBalance("WAVES")))
+}
+
+## internal functions
+
+@Callable(i)
+func unleaseAllFromDefault() = {
+  if (i.caller != this) then {throw("self invoke only")}
+  else {
+    let currentLeaseId = getString("wavesLease_"+getDefaultNode()+"_lastId").valueOrElse("")
+    if (currentLeaseId != "") then [
+      LeaseCancel(fromBase58String(currentLeaseId)),
+      StringEntry("wavesLease_"+getDefaultNode()+"_lastId", "")
+    ] else []
+  }
+}
+
+@Callable(i)
+func leaseToDefault(amount: Int) = {
+  if (i.caller != this) then {throw("self invoke only")}
+  else {
+    strict inv = invoke(this, "unleaseAllFromDefault", [], [])
+
+    let nodeStr = getDefaultNode()
+    let lease = Lease(nodeStr.addressFromStringValue(), amount)
+    [
+      lease, 
+      StringEntry("wavesLease_"+nodeStr+"_lastId", lease.calculateLeaseId().toBase58String())
+    ]
+  }
+}
+
+## external functions
+
+@Callable(i)
+func rebalanceLeases() = {
+  let lastRebalance = getIntegerValue("stats_lastRebalance")
+  if (lastRebalance - 100 <= height) then {throw("can't rebalance yet")}
+  else {
+    let balance = wavesBalance(this).regular
+    let (nodesLi, sharesLi) = getNodesSetup()
+
+    # unlease all
+    func f1(accum: List[LeaseCancel], nextNode: String) = {
+      let currentLeaseId = getString("wavesLease_"+nextNode+"_lastId").valueOrElse("").fromBase58String()
+      accum ++ (if (currentLeaseId != base58'') then [LeaseCancel(currentLeaseId)] else [])
+    }
+    let unleaseResult = FOLD<10>(nodesLi, [], f1)
+
+    # lease all based on ratios
+    func f2(accum: List[Lease|StringEntry], nextNode: String) = {
+      let amount = fraction(balance, sharesLi[indexOf(nodesLi, nextNode).value()], 10000)
+      let lease = Lease(nextNode.addressFromStringValue(), amount)
+      accum ++ [lease, StringEntry("wavesLease_"+nextNode+"_lastId", lease.calculateLeaseId().toBase58String())]
+    }
+    let leaseResult = FOLD<10>(nodesLi, [], f2)
+
+    [
+      IntegerEntry("stats_lastRebalance", height)
+    ] ++ unleaseResult ++ leaseResult
+  }
+}
+
+@Callable(i)
+func init() = {
+  if (i.caller != this && i.caller.toString() != "3P9xX849YJXg7C87v82cDyDy5VhKiPJpHo8") then {throw("available for self-invoke only")}
+  else {
+    let lp = Issue("pWAVES", "Staked WAVES - decentralized liquid staking derivative for WAVES token powered by Puzzle team.", 0, 8, true)
+    let lpId = lp.calculateAssetId()
+
+    [
+      lp,
+      StringEntry("setup_lpId", lpId.toBase58String()),
+      StringEntry("setup_nodes", "3P98uUFYSP3jRr76kUAeW96Vb2m4LZhrAAf,5000;3PLp1QsFxukK5nnTBYHAqjz9duWMriDkHeT,5000"),
+      StringEntry("setup_defaultNode", "3P98uUFYSP3jRr76kUAeW96Vb2m4LZhrAAf"),
+      IntegerEntry("stats_lastRebalance", 100)
+    ]
+  }
+}
+
+@Callable(i)
+func mintLP() = {
+  let assetId = i.payments[0].assetId
+  let amount = i.payments[0].amount
+  let quantity = getLPQuantity()
+  let toMint = fraction(amount, Scale8, getLPContractPrice(-amount))
+
+  if ("WAVES" != assetId.getAssetString()) then {throw("wrong asset attached")}
+  else if (getString("setup_isPaused").valueOrElse("") != "") then {throw("contract is paused")}
+  else if ((quantity + toMint) > maxLPCap) then {throw("LP cap reached")}
+  else {
+
+    let lpId = getStringValue("setup_lpId").fromBase58String()
+    let reissue = Reissue(lpId, toMint, true)
+
+    strict inv = invoke(this, "leaseToDefault", [amount], [])
+
+    [
+      reissue,
+      ScriptTransfer(i.caller, toMint, lpId)
+    ]
+
+  }
+}
+
+@Callable(i)
+func redeemLP() = {
+  let lpId = getString("setup_lpId").value().fromBase58String()
+  let attachedAssetId = i.payments[0].assetId
+  let amount = i.payments[0].amount
+
+  let assetToReturn = unit
+  let amountToReturn = fraction(amount, getLPContractPrice(0), Scale8)
+
+  if (attachedAssetId != lpId) then {throw("wrong asset attached")}
+  else if (getString("setup_isPaused").valueOrElse("") != "") then {throw("contract is paused")}
+  else {
+    strict inv1 = invoke(this, "unleaseAllFromDefault", [], [])
+    strict bal = wavesBalance(this).available
+    strict inv2 = invoke(this, "leaseToDefault", [bal-amountToReturn], [])
+
+    [
+      Burn(lpId, amount),
+      ScriptTransfer(i.caller, amountToReturn, assetToReturn),
+      getStatsEntry()
+    ]
+  }
+}
+
+## verifier
+
+@Verifier(tx)
+func verify() = {
+  let multisigStr = getString("APPROVER_ADDRESS").valueOrElse("")
+  let multisigAddress = addressFromString(multisigStr)
+  let multisigOk = match (multisigAddress) {
+      case t:Address => true
+      case _ => false
+    }
+
+  if (multisigOk) then { # verify with multisig
+    match tx {
+      case ttx:SetScriptTransaction => {
+        match ttx.script {
+          case script: ByteVector =>
+            let scriptHasha = blake2b256(script).toBase58String()
+            let validFrom = getInteger(multisigAddress.value(), "script%%" + CONTRACT_TYPE + "%%" + scriptHasha + "%%validFrom").valueOrErrorMessage("validFrom not set")
+            let validTo = getInteger(multisigAddress.value(), "script%%" + CONTRACT_TYPE + "%%" + scriptHasha + "%%validTo").valueOrErrorMessage("validTo not set")
+            height >= validFrom && height <= validTo
+          case _ => false  # Reject SetScript(null) explicitly
+        }
+      }
+      case otx => {
+        let taskId = "tx_" + this.toString() + "_" + toBase58String(otx.id)
+        let isApproved = getBoolean(multisigAddress.value(), this.toString() + "_" + toBase58String(otx.id) + "__approved").valueOrElse(false)
+        let approvedFrom = getInteger(multisigAddress.value(), taskId + "__approvedFrom").valueOrElse(0)
+        isApproved && height >= approvedFrom
+      }
+    } 
+  } else { # verify with default method for given contract
+    sigVerify(tx.bodyBytes, tx.proofs[0], tx.senderPublicKey)
+  }
+}
