@@ -3,7 +3,7 @@
 {-# SCRIPT_TYPE ACCOUNT #-}
 
 let CONTRACT_TYPE = "pWAVES"
-let VERSION = "pWAVES-1.0.1"
+let VERSION = "pWAVES-1.0.2"
 
 let Scale8 = 100000000
 let Scale6 = 1000000
@@ -77,10 +77,12 @@ func unleaseAllFromDefault() = {
 func leaseToDefault(amount: Int) = {
   if (i.caller != this) then {throw("self invoke only")}
   else {
+    strict bal0 = wavesBalance(this).available
     strict inv = invoke(this, "unleaseAllFromDefault", [], [])
+    strict wasLeased = wavesBalance(this).available - bal0
 
     let nodeStr = getDefaultNode()
-    let lease = Lease(nodeStr.addressFromStringValue(), amount)
+    let lease = Lease(nodeStr.addressFromStringValue(), amount + wasLeased)
     [
       lease, 
       StringEntry("wavesLease_"+nodeStr+"_lastId", lease.calculateLeaseId().toBase58String())
