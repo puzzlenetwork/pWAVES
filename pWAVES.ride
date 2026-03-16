@@ -3,7 +3,7 @@
 {-# SCRIPT_TYPE ACCOUNT #-}
 
 let CONTRACT_TYPE = "pWAVES"
-let VERSION = "pWAVES-1.0.2"
+let VERSION = "pWAVES-1.0.3"
 
 let Scale8 = 100000000
 let Scale6 = 1000000
@@ -38,7 +38,7 @@ func getNodesSetup() = {
     (accum._1 ++ [node[0]], accum._2 ++ [node[1].parseInt()])
   }
 
-  FOLD<10>(nodesSetup, ([], []), f)
+  FOLD<12>(nodesSetup, ([], []), f)
 }
 
 func getDefaultNode() = {
@@ -105,7 +105,7 @@ func rebalanceLeases() = {
       let currentLeaseId = getString("wavesLease_"+nextNode+"_lastId").valueOrElse("").fromBase58String()
       accum ++ (if (currentLeaseId != base58'') then [LeaseCancel(currentLeaseId)] else [])
     }
-    let unleaseResult = FOLD<10>(nodesLi, [], f1)
+    let unleaseResult = FOLD<12>(nodesLi, [], f1)
 
     # lease all based on ratios
     func f2(accum: List[Lease|StringEntry], nextNode: String) = {
@@ -113,7 +113,7 @@ func rebalanceLeases() = {
       let lease = Lease(nextNode.addressFromStringValue(), amount)
       accum ++ [lease, StringEntry("wavesLease_"+nextNode+"_lastId", lease.calculateLeaseId().toBase58String())]
     }
-    let leaseResult = FOLD<10>(nodesLi, [], f2)
+    let leaseResult = FOLD<12>(nodesLi, [], f2)
 
     [
       IntegerEntry("stats_lastRebalance", height)
