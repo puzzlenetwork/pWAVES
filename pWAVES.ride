@@ -3,7 +3,7 @@
 {-# SCRIPT_TYPE ACCOUNT #-}
 
 let CONTRACT_TYPE = "pWAVES"
-let VERSION = "pWAVES-1.0.3"
+let VERSION = "pWAVES-1.0.4"
 
 let Scale8 = 100000000
 let Scale6 = 1000000
@@ -116,7 +116,8 @@ func rebalanceLeases() = {
     let leaseResult = FOLD<12>(nodesLi, [], f2)
 
     [
-      IntegerEntry("stats_lastRebalance", height)
+      IntegerEntry("stats_lastRebalance", height),
+      getStatsEntry()
     ] ++ unleaseResult ++ leaseResult
   }
 }
